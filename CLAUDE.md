@@ -57,3 +57,4 @@ The whole system feeds one loop. Read these in order:
 - **Tools fail by raising `ToolError`** (`tools/base.py`), not by returning error strings or letting exceptions escape. The loop catches `ToolError` (and any other exception) and feeds it back as a `tool_result` with `is_error=True` so the model can recover instead of crashing. Use it for expected failures with a message that tells the model how to recover (see `edit.py`).
 - **`edit.py` invariant**: `old_string` must match exactly once unless `replace_all`. Zero matches = stale model state (reject), many matches = ambiguous (reject). This forces read-before-edit. Preserve this when touching edit logic.
 - The agent operates on the **current working directory** (the CLI `os.chdir`s into the workdir). Tool paths are relative to that.
+- **Keep docs in sync.** After implementing a feature or changing the structure, update the relevant docs (`README.md`, this file, the design doc) in the same change.
