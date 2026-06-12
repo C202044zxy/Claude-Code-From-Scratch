@@ -15,7 +15,20 @@ import argparse
 import os
 import sys
 
-from .agent import Agent
+from .agent import PROVIDERS, Agent
+
+
+def _load_dotenv(path: str = ".env") -> None:
+    """Tiny .env loader (no dependency). Real env vars win over the file."""
+    if not os.path.isfile(path):
+        return
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            os.environ.setdefault(key.strip(), value.strip())
 
 
 def main() -> int:
@@ -29,12 +42,21 @@ def main() -> int:
     )
     parser.add_argument("--model", default=None, help="Override the model id.")
     parser.add_argument(
+        "--provider",
+        default=None,
+        choices=sorted(PROVIDERS),
+        help="LLM provider (default: $CC_PROVIDER or anthropic).",
+    )
+    parser.add_argument(
         "--effort",
         default=None,
         choices=["low", "medium", "high", "xhigh", "max"],
-        help="Reasoning effort (default: high).",
+        help="Reasoning effort (default: high). Anthropic only.",
     )
     args = parser.parse_args()
+
+    # Load .env from the launch dir before we chdir into the workdir below.
+    _load_dotenv()
 
     task = " ".join(args.task).strip()
     if not task and not sys.stdin.isatty():
@@ -42,10 +64,12 @@ def main() -> int:
     if not task:
         parser.error("no task provided (pass it as an argument or via stdin)")
 
-    if not os.getenv("ANTHROPIC_API_KEY"):
+    provider = (args.provider or os.getenv("CC_PROVIDER", "anthropic")).lower()
+    key_env = PROVIDERS.get(provider, {}).get("api_key_env", "ANTHROPIC_API_KEY")
+    if not os.getenv(key_env):
         print(
-            "error: ANTHROPIC_API_KEY is not set. Copy .env.example to .env and "
-            "fill it in, or export the key.",
+            f"error: {key_env} is not set (provider: {provider}). Copy "
+            ".env.example to .env and fill it in, or export the key.",
             file=sys.stderr,
         )
         return 1
@@ -58,7 +82,7 @@ def main() -> int:
 
     print(f"\033[1mcc\033[0m in {workdir}\n\033[2m> {task}\033[0m\n")
 
-    agent = Agent(model=args.model, effort=args.effort)
+    agent = Agent(model=args.model, effort=args.effort, provider=provider)
     try:
         final = agent.run(task)
     except KeyboardInterrupt:

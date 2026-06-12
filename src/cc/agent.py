@@ -29,6 +29,28 @@ from .tools import Tool, ToolError, default_tools
 # A sink for human-readable progress. The CLI passes `print`; tests can capture.
 Emit = Callable[[str], None]
 
+# Provider presets. Both speak the Anthropic Messages API — DeepSeek ships an
+# Anthropic-compatible endpoint — so the SDK, the message format, and the tool
+# format are identical. Only the base_url, the API key, and a couple of
+# Anthropic-only request params differ. To add another such provider, add a row.
+PROVIDERS: dict[str, dict[str, Any]] = {
+    "anthropic": {
+        "base_url": None,  # SDK default
+        "api_key_env": "ANTHROPIC_API_KEY",
+        "default_model": "claude-opus-4-8",
+        "default_max_tokens": 16000,
+        # Anthropic-only knobs the loop passes; DeepSeek rejects these.
+        "extended": True,
+    },
+    "deepseek": {
+        "base_url": "https://api.deepseek.com/anthropic",
+        "api_key_env": "DEEPSEEK_API_KEY",
+        "default_model": "deepseek-chat",
+        "default_max_tokens": 8000,
+        "extended": False,
+    },
+}
+
 
 class Agent:
     def __init__(
@@ -38,15 +60,32 @@ class Agent:
         model: str | None = None,
         max_tokens: int | None = None,
         effort: str | None = None,
+        provider: str | None = None,
         emit: Emit = print,
         max_turns: int = 60,
     ) -> None:
-        self.client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
+        provider = (provider or os.getenv("CC_PROVIDER", "anthropic")).lower()
+        if provider not in PROVIDERS:
+            raise ValueError(
+                f"unknown provider {provider!r}; choose from {sorted(PROVIDERS)}"
+            )
+        self.provider = provider
+        cfg = PROVIDERS[provider]
+        self.extended = cfg["extended"]
+
+        # base_url=None lets the SDK use its default; api_key=None lets it fall
+        # back to the env var it reads natively (ANTHROPIC_API_KEY).
+        self.client = anthropic.Anthropic(
+            base_url=cfg["base_url"],
+            api_key=os.getenv(cfg["api_key_env"]),
+        )
         self.tools = tools if tools is not None else default_tools()
         self.tools_by_name = {t.name: t for t in self.tools}
         self.system = system
-        self.model = model or os.getenv("CC_MODEL", "claude-opus-4-8")
-        self.max_tokens = max_tokens or int(os.getenv("CC_MAX_TOKENS", "16000"))
+        self.model = model or os.getenv("CC_MODEL") or cfg["default_model"]
+        self.max_tokens = max_tokens or int(
+            os.getenv("CC_MAX_TOKENS") or cfg["default_max_tokens"]
+        )
         self.effort = effort or os.getenv("CC_EFFORT", "high")
         self.emit = emit
         self.max_turns = max_turns
@@ -57,14 +96,20 @@ class Agent:
         self.messages.append({"role": "user", "content": task})
 
         for _turn in range(self.max_turns):
+            # thinking/output_config are Anthropic-only; providers like DeepSeek
+            # speak the same API but reject them, so only send them when extended.
+            extra: dict[str, Any] = {}
+            if self.extended:
+                extra["thinking"] = {"type": "adaptive"}
+                extra["output_config"] = {"effort": self.effort}
+
             response = self.client.messages.create(
                 model=self.model,
                 max_tokens=self.max_tokens,
                 system=self.system,
                 tools=[t.schema() for t in self.tools],
                 messages=self.messages,
-                thinking={"type": "adaptive"},
-                output_config={"effort": self.effort},
+                **extra,
             )
 
             # Append the assistant turn verbatim — this preserves thinking blocks
