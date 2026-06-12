@@ -78,4 +78,3 @@ Architecture grounded in public reverse-engineering of Claude Code:
 [Claw Code](https://www.eigent.ai/blog/claw-code) ·
 [Rust rewrite analysis](https://dev.to/brooks_wilson_36fbefbbae4/claude-code-architecture-explained-agent-loop-tool-system-and-permission-model-rust-rewrite-41b2) ·
 [learn-claude-code](https://github.com/shareAI-lab/learn-claude-code)
-# Claude-Code-From-Scratch
