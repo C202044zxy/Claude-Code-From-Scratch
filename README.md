@@ -16,6 +16,7 @@ src/cc/
   agent.py        # THE LOOP: model → tool calls → results → repeat
   prompts.py      # system prompt (identity + operating rules)
   cli.py          # entry point: pick workdir, read task, run loop
+  swebench.py     # SWE-bench runner: instance → agent → git diff prediction
   tools/          # the agent's surface area on the world
     base.py       #   Tool ABC: name + description + input_schema + run()
     bash.py       #   run shell commands (the workhorse)
@@ -72,12 +73,38 @@ uv run cc -C /path/to/repo "fix the failing test in tests/test_foo.py"
 echo "add a --json flag to the CLI" | uv run cc
 ```
 
+## SWE-bench
+
+`cc-swebench` applies the agent to SWE-bench instances and writes predictions in
+the format the [official harness](https://github.com/princeton-nlp/SWE-bench)
+scores. For each instance it checks out the repo at `base_commit`, runs the loop
+on the issue text, and captures the resulting `git diff` as the predicted patch.
+
+```bash
+uv sync --group bench                    # pulls in Hugging Face `datasets`
+uv run cc-swebench --limit 1             # first instance of SWE-bench_Lite
+uv run cc-swebench --instances django__django-11099
+uv run cc-swebench --dataset ./instances.jsonl --output preds.jsonl
+
+# Then score with the official harness (separate install: pip install swebench)
+python -m swebench.harness.run_evaluation \
+    --dataset_name princeton-nlp/SWE-bench_Lite \
+    --predictions_path predictions.jsonl --run_id cc-run-1
+```
+
+Each run prints per-instance turns, token usage, and an estimated USD cost (the
+`Agent` now tallies token usage; `swebench.py` prices it). A single
+`SWE-bench_Lite` instance on `claude-opus-4-8` ($5/$25 per 1M in/out) typically
+costs **~$3–14** — the spread is driven by how many turns it takes and how much
+the transcript grows, since the loop re-sends the full history each turn (no
+prompt caching yet — see the roadmap).
+
 ## Roadmap (layering toward a SWE-bench number)
 
 The skeleton is enough to act on a real repo. Next, in rough priority order for a
 benchmark:
 
-- [ ] **SWE-bench runner** — apply the agent to a task instance, extract the
+- [x] **SWE-bench runner** — apply the agent to a task instance, extract the
       `git diff` as the prediction, score with the official harness.
 - [ ] **Context compaction** — summarize history when the trajectory grows long
       (long agentic runs are where naive agents fall over).

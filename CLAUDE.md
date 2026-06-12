@@ -17,6 +17,10 @@ uv run cc -C /path/to/repo "task"       # run against another repo
 echo "your task" | uv run cc            # task from stdin
 
 uv run cc --model <id> --effort <low|medium|high|xhigh|max> "task"
+
+uv sync --group bench                   # adds `datasets` for SWE-bench loading
+uv run cc-swebench --limit 1            # run the agent on SWE-bench_Lite[0]
+uv run cc-swebench --dataset ./x.jsonl  # or load instances from a local file
 ```
 
 Config via env (`.env`, overrides shown as defaults): `CC_MODEL=claude-opus-4-8`, `CC_EFFORT=high`, `CC_MAX_TOKENS=16000`. CLI `--model`/`--effort` flags take precedence.
@@ -50,6 +54,7 @@ The whole system feeds one loop. Read these in order:
 - **`src/cc/tools/`** — the agent's surface area. Each tool subclasses `Tool` (`base.py`): a `name`, a `description` (the model reads this to decide *when* to call it — it's a prompt, write it carefully), an `input_schema` (JSON Schema), and `run() -> str`. `tools/__init__.py::default_tools()` is the registry; **adding a capability = appending a `Tool` here**, no loop changes needed.
 - **`src/cc/prompts.py`** — the system prompt (agent identity + a few hard rules). Deliberately short.
 - **`src/cc/cli.py`** — entry point (`cc` script → `cc.cli:main`). Only jobs: resolve the workdir (`-C`), read the task (args or stdin), check `ANTHROPIC_API_KEY`, `os.chdir` into the workdir, run the loop, print the final text.
+- **`src/cc/swebench.py`** — SWE-bench runner (`cc-swebench` script). Per instance: checkout the repo at `base_commit`, `Agent.run(problem_statement)` with the repo as cwd, capture `git diff` as the prediction, write a JSON line. It *produces predictions only* — scoring is the official `swebench` harness's job. `Agent` accumulates `usage`/`turns`; this module prices them (`PRICING`) to print a per-instance cost.
 
 ## Conventions that matter
 

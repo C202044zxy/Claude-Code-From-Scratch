@@ -45,6 +45,7 @@ src/cc/
   agent.py        # THE LOOP — the only place that drives the model
   prompts.py      # system prompt (identity + a few hard rules)
   cli.py          # entry point: resolve workdir, read task, run loop, print
+  swebench.py     # SWE-bench runner: instance → agent → git diff prediction
   tools/          # the agent's surface area on the world
     base.py       #   Tool ABC + ToolError
     bash.py       #   run shell commands (the workhorse)
@@ -58,8 +59,9 @@ tests/
   test_smoke.py   # import + basic behavior checks
 ```
 
-The dependency direction is one-way and shallow: `cli.py → agent.py → {prompts,
-tools}`. Tools never import the agent; the agent never hard-codes a tool.
+The dependency direction is one-way and shallow: `{cli,swebench}.py → agent.py →
+{prompts, tools}`. Tools never import the agent; the agent never hard-codes a
+tool; both entry points drive the same unchanged loop.
 
 ## Design
 
@@ -152,6 +154,28 @@ the smallest correct change, verify with real commands, and prefer dedicated
 tools over shelling out. The model is capable; the prompt's job is framing, not
 micromanagement.
 
+### 7. The SWE-bench runner attaches around the loop, not inside it
+
+`swebench.py` is the first benchmark system layered on, and it demonstrates the
+extension model: it adds a *second entry point* (`cc-swebench`) that drives the
+same unchanged `Agent`. Per instance it (1) checks out the instance repo at
+`base_commit`, (2) `os.chdir`s in and runs `Agent.run(problem_statement)`, (3)
+captures `git diff --cached` against `base_commit` as the predicted patch, and
+(4) writes one JSON line (`instance_id`, `model_name_or_path`, `model_patch`).
+
+It deliberately stops at *prediction*. Scoring — building the per-instance
+environment, applying the predicted patch plus the gold test patch, running the
+hidden tests — is the official `swebench` harness's job, so we don't reimplement
+it. Repo clones are cached under `--repos-dir` and reset to a pristine
+`base_commit` between instances, so a run is resumable and re-cloning is avoided.
+
+To support this, `Agent` gained two small, loop-shaped additions: it accumulates
+`usage` (token totals across every API call) and counts `turns`. The runner
+prices those (`PRICING`) into a per-instance USD estimate. Because the loop
+re-sends the full transcript every turn and sends no `cache_control`, the
+dominant cost is cumulative input tokens — prompt caching / compaction (roadmap)
+is the biggest lever to bring it down.
+
 ## Data Flow (one task)
 
 ```
@@ -188,6 +212,8 @@ user task ─▶ cli.main ─▶ Agent.run
   `default_tools()`.
 - **New provider** → add a row to `PROVIDERS` (must speak the Messages API).
 - **Behavior change** → edit `SYSTEM_PROMPT`; no code changes needed.
-- **Future systems** (SWE-bench runner, context compaction, streaming,
-  sub-agents, trajectory logging, permission layer) all attach around the same
-  loop without changing its shape.
+- **New entry point** → drive the `Agent` from a new module (as `swebench.py`
+  does) without touching the loop.
+- **Future systems** (context compaction, streaming, sub-agents, trajectory
+  logging, permission layer) all attach around the same loop without changing
+  its shape — the SWE-bench runner is the worked example.

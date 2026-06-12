@@ -90,6 +90,16 @@ class Agent:
         self.emit = emit
         self.max_turns = max_turns
         self.messages: list[dict[str, Any]] = []
+        # Running token totals across every API call this Agent makes. Useful for
+        # cost accounting (see swebench.py). Cache fields stay 0 unless the
+        # provider/request enables prompt caching.
+        self.turns = 0
+        self.usage: dict[str, int] = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+        }
 
     def run(self, task: str) -> str:
         """Run the agent to completion on `task`. Returns the final text answer."""
@@ -111,6 +121,9 @@ class Agent:
                 messages=self.messages,
                 **extra,
             )
+
+            self.turns += 1
+            self._tally_usage(response)
 
             # Append the assistant turn verbatim — this preserves thinking blocks
             # and tool_use blocks the API needs to see on the next request.
@@ -137,6 +150,14 @@ class Agent:
             self.messages.append({"role": "user", "content": tool_results})
 
         return "[stopped: hit max turns without finishing]"
+
+    def _tally_usage(self, response: Any) -> None:
+        """Add one response's token counts to the running totals."""
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return
+        for key in self.usage:
+            self.usage[key] += getattr(usage, key, 0) or 0
 
     def _execute(self, name: str, args: dict[str, Any]) -> tuple[str, bool]:
         tool = self.tools_by_name.get(name)

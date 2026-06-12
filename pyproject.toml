@@ -10,11 +10,17 @@ dependencies = [
 
 [project.scripts]
 cc = "cc.cli:main"
+cc-swebench = "cc.swebench:main"
 
 [dependency-groups]
 dev = [
     "pytest>=8.0",
     "ruff>=0.6",
+]
+# Optional: pulls in Hugging Face `datasets` for loading SWE-bench instances
+# from the Hub. The runner also accepts local .json/.jsonl without this.
+bench = [
+    "datasets>=2.0",
 ]
 
 [build-system]
