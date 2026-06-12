@@ -38,6 +38,20 @@ The loop is the whole point. Everything else feeds it:
 5. **Conversation state** — an append-only `messages` list (assistant turns are
    appended verbatim so thinking/tool_use blocks survive).
 
+```mermaid
+flowchart TD
+    task([user task]) --> create["client.messages.create<br/>(system + tools + messages)"]
+    create --> stop{stop_reason<br/>== tool_use?}
+    stop -- no --> final([print final text])
+    stop -- yes --> exec["run each tool_use block"]
+    exec --> append["append tool_results<br/>as one user turn"]
+    append --> create
+    exec -. ToolError -.-> append
+```
+
+For the full write-up — stack, structure, and design decisions — see
+[docs/system-design.md](docs/system-design.md).
+
 ## Setup
 
 ```bash
