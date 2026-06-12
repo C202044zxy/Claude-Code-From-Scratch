@@ -40,7 +40,7 @@ git push                     # pushes the current branch to origin
 
 CI (`.github/workflows/ci.yml`) runs on every push to `main` and on every pull request. It does `uv sync`, an import smoke check, `ruff check .`, and `pytest`. Keep it green: run the two commands above before pushing. `pytest`/`ruff` are dev dependencies (the `dev` group in `pyproject.toml`, installed by `uv sync`); ruff config and `testpaths` also live there.
 
-**Auto-commit (standing authorization):** once a change is verified (the CI-equivalent checks above pass) and staged, commit it automatically without asking. This standing approval covers committing only — still do not `git push` or open a PR unless the user asks.
+**Auto-commit + push (standing authorization):** once a change is verified (the CI-equivalent checks above pass) and staged, commit it automatically without asking, then `git push` to `origin main` right after the commit. This standing approval covers commit and push only — still do not open a PR or force-push unless the user asks.
 
 ## Architecture
 
