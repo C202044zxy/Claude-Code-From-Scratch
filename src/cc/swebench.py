@@ -120,7 +120,7 @@ def prepare_repo(instance: dict[str, Any], repos_dir: str, emit) -> str:
 
     if not os.path.isdir(repo_path):
         emit(f"  cloning {repo} …")
-        _git(["clone", f"https://github.com/{repo}.git", repo_path], cwd=repos_dir)
+        _clone(f"https://github.com/{repo}.git", repo_path, repos_dir, emit)
 
     # Reset to a pristine tree, then fetch+checkout the base commit. fetch is a
     # no-op if we already have it (shallow clones may not, hence the fallback).
@@ -161,7 +161,19 @@ def run_instance(
     iid = instance["instance_id"]
     emit(f"\n\033[1m▶ {iid}\033[0m ({instance['repo']})")
 
-    repo_path = prepare_repo(instance, repos_dir, emit)
+    try:
+        repo_path = prepare_repo(instance, repos_dir, emit)
+    except (RuntimeError, SystemExit) as e:
+        # Couldn't get the repo to base_commit — record an empty patch and move
+        # on rather than aborting the whole batch.
+        emit(f"  \033[31mskipped: {e}\033[0m")
+        return {
+            "instance_id": iid,
+            "model_name_or_path": model or "unknown",
+            "model_patch": "",
+            "cc_error": str(e).splitlines()[0] if str(e) else "repo prep failed",
+        }
+
     cwd = os.getcwd()
     os.chdir(repo_path)
     start = time.time()
@@ -212,6 +224,28 @@ def estimate_cost(model: str, usage: dict[str, int]) -> float:
         + usage["output_tokens"] / 1e6 * price["output"]
         + usage["cache_read_input_tokens"] / 1e6 * price.get("cache_read", 0.0)
     )
+
+
+def _clone(url: str, dest: str, cwd: str, emit, retries: int = 3) -> None:
+    """Clone with a blobless partial filter, retrying on transient failures.
+
+    `--filter=blob:none` fetches commits and trees but not file blobs, so even
+    large repos clone fast and reliably; blobs for the checked-out commit are
+    fetched on demand. Large full clones over a flaky link otherwise fail
+    mid-transfer (e.g. a TLS reset), so we retry a few times.
+    """
+    args = ["clone", "--filter=blob:none", url, dest]
+    for attempt in range(1, retries + 1):
+        proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+        if proc.returncode == 0:
+            return
+        # A partial failure leaves a half-written dir that the next clone rejects.
+        if os.path.isdir(dest):
+            subprocess.run(["rm", "-rf", dest], check=False)
+        if attempt < retries:
+            emit(f"  clone failed (attempt {attempt}/{retries}), retrying …")
+            time.sleep(2 * attempt)
+    raise RuntimeError(f"git clone failed after {retries} attempts:\n{proc.stderr}")
 
 
 def _git(args: list[str], cwd: str, check: bool = True) -> int:
