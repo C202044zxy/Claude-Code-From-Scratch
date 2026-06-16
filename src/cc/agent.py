@@ -110,8 +110,6 @@ class Agent:
         }
 
         self.compaction_prompt = compaction_prompt
-        # Fix(Claude): cfg key is "context_window" (see PROVIDERS), not
-        # "default_context_window" — the old name raised KeyError on construct.
         self.context_window = context_window or int(
             os.getenv("CC_CONTEXT_WINDOW") or cfg["context_window"]
         )
@@ -119,10 +117,6 @@ class Agent:
             os.getenv("CC_COMPACT_THRESHOLD", 0.8)
         )
         self.keep_recent = keep_recent or int(os.getenv("CC_KEEP_RECENT", 6))
-        # Fix(Claude): _should_compact reads self.last_context_tokens and
-        # _compact bumps self.compactions, but neither was initialized.
-        # last_context_tokens is the *most recent* request's prompt size (not the
-        # cumulative self.usage total), refreshed after every response.
         self.last_context_tokens = 0
         self.compactions = 0
 
@@ -132,10 +126,6 @@ class Agent:
         self.task = task
 
         for _turn in range(self.max_turns):
-            # Fix(Claude): the design calls for _maybe_compact() at the top of
-            # each iteration, before building the request; it was never wired in,
-            # so compaction never ran. First iteration is a no-op
-            # (last_context_tokens == 0).
             self._maybe_compact()
 
             # thinking/output_config are Anthropic-only; providers like DeepSeek
@@ -156,10 +146,6 @@ class Agent:
 
             self.turns += 1
             self._tally_usage(response)
-            # Fix(Claude): record the true size of THIS request's prompt for the
-            # compaction trigger. _should_compact previously summed the
-            # cumulative self.usage totals, which only ever grow and don't
-            # reflect the live context after a compaction.
             self.last_context_tokens = _context_tokens(response)
 
             # Append the assistant turn verbatim — this preserves thinking blocks
@@ -215,9 +201,6 @@ class Agent:
     
     ## ----- Compaction -----
     def _should_compact(self) -> bool:
-        # Fix(Claude): trigger off the most recent request's prompt size, not the
-        # cumulative usage totals (which grow forever and never drop after a
-        # compaction, so they'd keep firing).
         if self.last_context_tokens <= self.compact_threshold * self.context_window:
             return False
         if len(self.messages) <= self.keep_recent + 2:
@@ -235,9 +218,6 @@ class Agent:
         transcript = self._render_transcript(prefix)
         summary = self._summarize(transcript)
         self.messages = self._rebuild_after_compaction(self.task, summary, tail)
-        # Fix(Claude): the design's step 5 — count the compaction (separate from
-        # agent turns), reset the trigger so it doesn't immediately re-fire on
-        # the same (now stale) reading, and surface a progress line.
         self.compactions += 1
         self.last_context_tokens = 0
         self.emit(
@@ -271,12 +251,8 @@ class Agent:
         return "\n".join(lines)
 
     def _summarize(self, text: str) -> str:
-        # Fix(Claude): `messages` must be a list of message dicts, not a raw
-        # string. Wrap the rendered transcript in a single user turn. No tools.
         extra: dict[str, Any] = {}
         if self.extended:
-            # Fix(Claude): output_config takes {"effort": ...}, not a bare
-            # string, and it's an Anthropic-only knob — DeepSeek rejects it.
             extra["output_config"] = {"effort": "low"}
         response = self.client.messages.create(
             model=self.model,
@@ -286,15 +262,11 @@ class Agent:
             **extra,
         )
         self._tally_usage(response)
-        # Fix(Claude): use _final_text so a leading thinking/other block can't
-        # make content[0].text blow up; we only want the text content.
         return self._final_text(response.content)
 
     def _rebuild_after_compaction(
         self, task: str, summary: str, tail: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
-        # Fix(Claude): use the `task` parameter (the helper is meant to be pure
-        # and unit-testable in isolation) rather than reaching for self.task.
         return [
             {
                 "role": "user",
