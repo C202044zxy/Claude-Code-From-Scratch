@@ -48,7 +48,7 @@ Per-provider window in the `PROVIDERS` table, overridable by env:
 
 | Key | Source | Default | Meaning |
 | --- | --- | --- | --- |
-| `context_window` | `PROVIDERS` row / `CC_CONTEXT_WINDOW` | `anthropic`: 200_000, `deepseek`: 128_000 (estimate) | Model's context window in tokens. |
+| `context_window` | `PROVIDERS` row / `CC_CONTEXT_WINDOW` | `anthropic`: 200_000, `deepseek`: 1_000_000 | Model's context window in tokens. |
 | `compact_threshold` | `CC_COMPACT_THRESHOLD` | `0.8` | Fraction of the window at which to compact. Set `>= 1` to disable. |
 | `keep_recent` | `CC_KEEP_RECENT` | `6` | Trailing messages kept verbatim. |
 

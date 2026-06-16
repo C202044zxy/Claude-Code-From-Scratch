@@ -34,7 +34,7 @@ Anthropic-only request params (`thinking`, `output_config`) are sent.
 | Provider | Base URL | Key env | Default model | Extended params |
 | --- | --- | --- | --- | --- |
 | `anthropic` | SDK default | `ANTHROPIC_API_KEY` | `claude-opus-4-8` | yes |
-| `deepseek` | `api.deepseek.com/anthropic` | `DEEPSEEK_API_KEY` | `deepseek-chat` | no |
+| `deepseek` | `api.deepseek.com/anthropic` | `DEEPSEEK_API_KEY` | `deepseek-v4-flash` | no |
 
 Adding another compatible provider is one row in the table.
 

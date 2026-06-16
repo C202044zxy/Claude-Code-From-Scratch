@@ -84,7 +84,7 @@ def main() -> int:
 
     agent = Agent(model=args.model, effort=args.effort, provider=provider)
     try:
-        final = agent.run(task)
+        agent.run(task)
     except KeyboardInterrupt:
         print("\n[interrupted]", file=sys.stderr)
         return 130

@@ -48,9 +48,9 @@ PROVIDERS: dict[str, dict[str, Any]] = {
     "deepseek": {
         "base_url": "https://api.deepseek.com/anthropic",
         "api_key_env": "DEEPSEEK_API_KEY",
-        "default_model": "deepseek-chat",
-        "default_max_tokens": 8000,
-        "context_window": 128_000,  # estimate
+        "default_model": "deepseek-v4-flash",
+        "default_max_tokens": 16000,  # v4-flash caps output at 384K; this is a sane default
+        "context_window": 1_000_000,
         "extended": False,
     },
 }
