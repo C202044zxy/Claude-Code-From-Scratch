@@ -23,7 +23,7 @@ from typing import Any, Callable
 
 import anthropic
 
-from .prompts import SYSTEM_PROMPT
+from .prompts import SYSTEM_PROMPT, COMPACTION_PROMPT
 from .tools import Tool, ToolError, default_tools
 
 # A sink for human-readable progress. The CLI passes `print`; tests can capture.
@@ -39,6 +39,9 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "api_key_env": "ANTHROPIC_API_KEY",
         "default_model": "claude-opus-4-8",
         "default_max_tokens": 16000,
+        # Fix(Claude): __init__ reads cfg["context_window"] for the compaction
+        # budget, but the provider rows never defined it (KeyError on construct).
+        "context_window": 200_000,
         # Anthropic-only knobs the loop passes; DeepSeek rejects these.
         "extended": True,
     },
@@ -47,6 +50,7 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "api_key_env": "DEEPSEEK_API_KEY",
         "default_model": "deepseek-chat",
         "default_max_tokens": 8000,
+        "context_window": 128_000,  # estimate
         "extended": False,
     },
 }
@@ -63,6 +67,10 @@ class Agent:
         provider: str | None = None,
         emit: Emit = print,
         max_turns: int = 60,
+        compaction_prompt: str = COMPACTION_PROMPT,
+        context_window: int | None = None,
+        compact_threshold: float | None = None,
+        keep_recent: int | None = None,
     ) -> None:
         provider = (provider or os.getenv("CC_PROVIDER", "anthropic")).lower()
         if provider not in PROVIDERS:
@@ -101,11 +109,35 @@ class Agent:
             "cache_creation_input_tokens": 0,
         }
 
+        self.compaction_prompt = compaction_prompt
+        # Fix(Claude): cfg key is "context_window" (see PROVIDERS), not
+        # "default_context_window" — the old name raised KeyError on construct.
+        self.context_window = context_window or int(
+            os.getenv("CC_CONTEXT_WINDOW") or cfg["context_window"]
+        )
+        self.compact_threshold = compact_threshold or float(
+            os.getenv("CC_COMPACT_THRESHOLD", 0.8)
+        )
+        self.keep_recent = keep_recent or int(os.getenv("CC_KEEP_RECENT", 6))
+        # Fix(Claude): _should_compact reads self.last_context_tokens and
+        # _compact bumps self.compactions, but neither was initialized.
+        # last_context_tokens is the *most recent* request's prompt size (not the
+        # cumulative self.usage total), refreshed after every response.
+        self.last_context_tokens = 0
+        self.compactions = 0
+
     def run(self, task: str) -> str:
         """Run the agent to completion on `task`. Returns the final text answer."""
         self.messages.append({"role": "user", "content": task})
+        self.task = task
 
         for _turn in range(self.max_turns):
+            # Fix(Claude): the design calls for _maybe_compact() at the top of
+            # each iteration, before building the request; it was never wired in,
+            # so compaction never ran. First iteration is a no-op
+            # (last_context_tokens == 0).
+            self._maybe_compact()
+
             # thinking/output_config are Anthropic-only; providers like DeepSeek
             # speak the same API but reject them, so only send them when extended.
             extra: dict[str, Any] = {}
@@ -124,6 +156,11 @@ class Agent:
 
             self.turns += 1
             self._tally_usage(response)
+            # Fix(Claude): record the true size of THIS request's prompt for the
+            # compaction trigger. _should_compact previously summed the
+            # cumulative self.usage totals, which only ever grow and don't
+            # reflect the live context after a compaction.
+            self.last_context_tokens = _context_tokens(response)
 
             # Append the assistant turn verbatim — this preserves thinking blocks
             # and tool_use blocks the API needs to see on the next request.
@@ -175,6 +212,101 @@ class Agent:
         for block in content:
             if block.type == "text" and block.text.strip():
                 self.emit(block.text.strip())
+    
+    ## ----- Compaction -----
+    def _should_compact(self) -> bool:
+        # Fix(Claude): trigger off the most recent request's prompt size, not the
+        # cumulative usage totals (which grow forever and never drop after a
+        # compaction, so they'd keep firing).
+        if self.last_context_tokens <= self.compact_threshold * self.context_window:
+            return False
+        if len(self.messages) <= self.keep_recent + 2:
+            return False
+        return True
+
+    def _compact(self) -> None:
+        cut = len(self.messages) - self.keep_recent
+        while cut > 0 and self.messages[cut]["role"] != "assistant":
+            cut -= 1
+        if cut == 0:
+            return
+
+        prefix, tail = self.messages[:cut], self.messages[cut:]
+        transcript = self._render_transcript(prefix)
+        summary = self._summarize(transcript)
+        self.messages = self._rebuild_after_compaction(self.task, summary, tail)
+        # Fix(Claude): the design's step 5 — count the compaction (separate from
+        # agent turns), reset the trigger so it doesn't immediately re-fire on
+        # the same (now stale) reading, and surface a progress line.
+        self.compactions += 1
+        self.last_context_tokens = 0
+        self.emit(
+            f"  \033[2m· compacted {len(prefix)} msgs → summary\033[0m"
+        )
+
+    def _maybe_compact(self) -> None:
+        if self._should_compact():
+            self._compact()
+
+    def _render_transcript(self, messages: list[dict[str, Any]]) -> str:
+        """Flatten a prefix of `messages` into plain text for the summarizer.
+
+        Pure: no API calls, no mutation. Renders text blocks, tool calls
+        (name + args) and tool results; skips `thinking` blocks; truncates long
+        blocks. Plain text sidesteps the API's tool_use/tool_result pairing
+        rules entirely, so the summary call never sees an orphaned block.
+        """
+        lines: list[str] = []
+        for msg in messages:
+            role = str(msg["role"]).upper()
+            content = msg["content"]
+            # The initial task and a post-compaction summary are plain strings.
+            if isinstance(content, str):
+                lines.append(f"{role}: {_truncate(content)}")
+                continue
+            for block in content:
+                rendered = _render_block(block)
+                if rendered:
+                    lines.append(f"{role}: {rendered}")
+        return "\n".join(lines)
+
+    def _summarize(self, text: str) -> str:
+        # Fix(Claude): `messages` must be a list of message dicts, not a raw
+        # string. Wrap the rendered transcript in a single user turn. No tools.
+        extra: dict[str, Any] = {}
+        if self.extended:
+            # Fix(Claude): output_config takes {"effort": ...}, not a bare
+            # string, and it's an Anthropic-only knob — DeepSeek rejects it.
+            extra["output_config"] = {"effort": "low"}
+        response = self.client.messages.create(
+            model=self.model,
+            max_tokens=2048,
+            system=self.compaction_prompt,
+            messages=[{"role": "user", "content": text}],
+            **extra,
+        )
+        self._tally_usage(response)
+        # Fix(Claude): use _final_text so a leading thinking/other block can't
+        # make content[0].text blow up; we only want the text content.
+        return self._final_text(response.content)
+
+    def _rebuild_after_compaction(
+        self, task: str, summary: str, tail: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        # Fix(Claude): use the `task` parameter (the helper is meant to be pure
+        # and unit-testable in isolation) rather than reaching for self.task.
+        return [
+            {
+                "role": "user",
+                "content": (
+                    task
+                    + "\n\n[Earlier conversation compacted to save context. "
+                    + "Summary of work so far:]\n"
+                    + summary
+                ),
+            },
+            *tail,
+        ]
 
     @staticmethod
     def _final_text(content: list[Any]) -> str:
@@ -182,7 +314,63 @@ class Agent:
         return "\n".join(parts).strip()
 
 
+def _context_tokens(response: Any) -> int:
+    """Size of the prompt the model just saw, from one response's usage.
+
+    Sums the three input-side fields so the reading is correct whether or not
+    prompt caching is on (cache_read/cache_creation are 0 when it's off).
+    """
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return 0
+    return (
+        (getattr(usage, "input_tokens", 0) or 0)
+        + (getattr(usage, "cache_read_input_tokens", 0) or 0)
+        + (getattr(usage, "cache_creation_input_tokens", 0) or 0)
+    )
+
+
 def _fmt_args(args: dict[str, Any]) -> str:
     """Compact one-line arg preview for the progress log."""
     out = json.dumps(args)
     return out if len(out) <= 120 else out[:117] + "…"
+
+
+# Max chars kept from any one block when rendering a transcript; longer blocks
+# are truncated so the summary call stays cheap and the text stays readable.
+_TRANSCRIPT_BLOCK_LIMIT = 2000
+
+
+def _truncate(text: str, limit: int = _TRANSCRIPT_BLOCK_LIMIT) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"… [+{len(text) - limit} chars]"
+
+
+def _block_field(block: Any, name: str) -> Any:
+    """Read a field from a content block that may be an SDK object or a dict.
+
+    Assistant blocks are SDK objects (`block.type`); the tool_result blocks the
+    loop builds are plain dicts (`block["type"]`). This reads either.
+    """
+    if isinstance(block, dict):
+        return block.get(name)
+    return getattr(block, name, None)
+
+
+def _render_block(block: Any) -> str:
+    """Render one content block to text, or "" to skip it (e.g. thinking)."""
+    btype = _block_field(block, "type")
+    if btype == "text":
+        return _truncate((_block_field(block, "text") or "").strip())
+    if btype == "tool_use":
+        name = _block_field(block, "name")
+        args = _fmt_args(_block_field(block, "input") or {})
+        return f"[tool_use {name}({args})]"
+    if btype == "tool_result":
+        content = _block_field(block, "content")
+        text = content if isinstance(content, str) else json.dumps(content)
+        label = "tool_error" if _block_field(block, "is_error") else "tool_result"
+        return f"[{label}: {_truncate(text)}]"
+    # thinking / redacted_thinking / anything unknown: nothing useful to summarize.
+    return ""

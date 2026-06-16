@@ -106,8 +106,9 @@ benchmark:
 
 - [x] **SWE-bench runner** — apply the agent to a task instance, extract the
       `git diff` as the prediction, score with the official harness.
-- [ ] **Context compaction** — summarize history when the trajectory grows long
-      (long agentic runs are where naive agents fall over).
+- [x] **Context compaction** — summarize older history when the live context
+      crosses a token budget, so long runs don't overflow the window
+      (see [`docs/context-compaction.md`](docs/context-compaction.md)).
 - [ ] **Streaming output** — token-level visibility during long turns.
 - [ ] **Sub-agents** — a `task` tool that spawns a nested loop for parallel work.
 - [ ] **Trajectory logging** — record every step for debugging and analysis.

@@ -23,7 +23,7 @@ uv run cc-swebench --limit 1            # run the agent on SWE-bench_Lite[0]
 uv run cc-swebench --dataset ./x.jsonl  # or load instances from a local file
 ```
 
-Config via env (`.env`, overrides shown as defaults): `CC_MODEL=claude-opus-4-8`, `CC_EFFORT=high`, `CC_MAX_TOKENS=16000`. CLI `--model`/`--effort` flags take precedence.
+Config via env (`.env`, overrides shown as defaults): `CC_MODEL=claude-opus-4-8`, `CC_EFFORT=high`, `CC_MAX_TOKENS=16000`. CLI `--model`/`--effort` flags take precedence. Context compaction (see `docs/context-compaction.md`) adds `CC_CONTEXT_WINDOW` (per-provider default), `CC_COMPACT_THRESHOLD=0.8` (fraction of the window that triggers compaction; set `>= 1` to disable), and `CC_KEEP_RECENT=6` (trailing messages kept verbatim).
 
 Verify changes by running `uv run cc` against a real directory, and by the checks below.
 

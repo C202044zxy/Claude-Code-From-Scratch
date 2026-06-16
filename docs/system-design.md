@@ -196,8 +196,9 @@ user task ─▶ cli.main ─▶ Agent.run
 ## Design Trade-offs
 
 - **Minimalism over features.** No streaming, no sub-agents, no permission
-  gating, no context compaction yet. These are deliberately deferred (see the
-  roadmap in `README.md`) so the skeleton stays legible.
+  gating yet. These are deliberately deferred (see the roadmap in `README.md`)
+  so the skeleton stays legible. (Context compaction is now implemented — see
+  `docs/context-compaction.md`.)
 - **Blocking, single-process.** Simpler to reason about and debug than an async
   or distributed design; adequate for a CLI that drives one model at a time.
 - **Model-driven control flow.** Trades predictability for flexibility — the
@@ -214,6 +215,6 @@ user task ─▶ cli.main ─▶ Agent.run
 - **Behavior change** → edit `SYSTEM_PROMPT`; no code changes needed.
 - **New entry point** → drive the `Agent` from a new module (as `swebench.py`
   does) without touching the loop.
-- **Future systems** (context compaction, streaming, sub-agents, trajectory
-  logging, permission layer) all attach around the same loop without changing
-  its shape — the SWE-bench runner is the worked example.
+- **Future systems** (streaming, sub-agents, trajectory logging, permission
+  layer) all attach around the same loop without changing its shape — the
+  SWE-bench runner and context compaction are the worked examples.
