@@ -89,8 +89,6 @@ def main() -> int:
         print("\n[interrupted]", file=sys.stderr)
         return 130
 
-    print("\n" + "─" * 60)
-    print(final or "[no final message]")
     return 0
 
 
