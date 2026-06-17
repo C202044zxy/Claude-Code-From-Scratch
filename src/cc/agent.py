@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 from typing import Any, Callable
+import sys
 
 import anthropic
 
@@ -56,6 +57,11 @@ PROVIDERS: dict[str, dict[str, Any]] = {
 }
 
 
+def _stdout_write(text: str):
+    sys.stdout.write(text)
+    sys.stdout.flush()
+
+
 class Agent:
     def __init__(
         self,
@@ -71,6 +77,7 @@ class Agent:
         context_window: int | None = None,
         compact_threshold: float | None = None,
         keep_recent: int | None = None,
+        stream_to: Emit = _stdout_write,
     ) -> None:
         provider = (provider or os.getenv("CC_PROVIDER", "anthropic")).lower()
         if provider not in PROVIDERS:
@@ -120,6 +127,8 @@ class Agent:
         self.last_context_tokens = 0
         self.compactions = 0
 
+        self.stream_to = stream_to
+
     def run(self, task: str) -> str:
         """Run the agent to completion on `task`. Returns the final text answer."""
         self.messages.append({"role": "user", "content": task})
@@ -135,14 +144,16 @@ class Agent:
                 extra["thinking"] = {"type": "adaptive"}
                 extra["output_config"] = {"effort": self.effort}
 
-            response = self.client.messages.create(
+            with self.client.messages.stream(
                 model=self.model,
                 max_tokens=self.max_tokens,
                 system=self.system,
                 tools=[t.schema() for t in self.tools],
                 messages=self.messages,
                 **extra,
-            )
+            ) as stream:
+                self._render_stream(stream)
+                response = stream.get_final_message()
 
             self.turns += 1
             self._tally_usage(response)
@@ -151,7 +162,6 @@ class Agent:
             # Append the assistant turn verbatim — this preserves thinking blocks
             # and tool_use blocks the API needs to see on the next request.
             self.messages.append({"role": "assistant", "content": response.content})
-            self._render_assistant(response.content)
 
             if response.stop_reason != "tool_use":
                 return self._final_text(response.content)
@@ -194,11 +204,6 @@ class Agent:
         except Exception as e:  # noqa: BLE001 — surface, don't crash the loop
             return f"{type(e).__name__}: {e}", True
 
-    def _render_assistant(self, content: list[Any]) -> None:
-        for block in content:
-            if block.type == "text" and block.text.strip():
-                self.emit(block.text.strip())
-    
     ## ----- Compaction -----
     def _should_compact(self) -> bool:
         if self.last_context_tokens <= self.compact_threshold * self.context_window:
@@ -279,6 +284,30 @@ class Agent:
             },
             *tail,
         ]
+    
+    # ----- Streaming -----
+    def _render_stream(self, stream: Any):
+        in_thinking = False
+        wrote_any = False
+
+        for event in stream:
+            if event.type == "thinking":
+                if not in_thinking:
+                    in_thinking = True
+                    self.stream_to("\033[2m")
+                self.stream_to(event.thinking)
+                wrote_any = True
+            elif event.type == "text":
+                if in_thinking:
+                    in_thinking = False
+                    self.stream_to("\033[0m\n")
+                self.stream_to(event.text)
+                wrote_any = True
+
+        if in_thinking:
+            self.stream_to("\033[0m")
+        if wrote_any:
+            self.stream_to("\n")
 
     @staticmethod
     def _final_text(content: list[Any]) -> str:

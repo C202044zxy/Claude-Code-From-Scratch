@@ -184,6 +184,9 @@ def run_instance(
             provider=provider,
             max_turns=max_turns,
             emit=emit,
+            # Non-interactive: keep token deltas out of the run logs. The
+            # tool/compaction `emit` lines above are unaffected.
+            stream_to=lambda _t: None,
         )
         task = TASK_TEMPLATE.format(problem_statement=instance["problem_statement"])
         try:

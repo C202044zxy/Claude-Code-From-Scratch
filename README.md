@@ -31,8 +31,9 @@ src/cc/
 The loop is the whole point. Everything else feeds it:
 
 1. **LLM client** — Anthropic Messages API (`claude-opus-4-8`), adaptive thinking.
-2. **Agent loop** (`agent.py`) — send messages + tools, execute any `tool_use`
-   the model returns, append results, repeat until `stop_reason != "tool_use"`.
+2. **Agent loop** (`agent.py`) — send messages + tools via `messages.stream()`,
+   render thinking/text deltas token-by-token, execute any `tool_use` the model
+   returns, append results, repeat until `stop_reason != "tool_use"`.
 3. **Tools** — each is `name + JSON-schema + run()`. Six of them give "infinite
    surface area."
 4. **System prompt** — sets the working context and a few hard rules.
@@ -41,7 +42,7 @@ The loop is the whole point. Everything else feeds it:
 
 ```mermaid
 flowchart TD
-    task([user task]) --> create["client.messages.create<br/>(system + tools + messages)"]
+    task([user task]) --> create["client.messages.stream<br/>(system + tools + messages)<br/>→ render thinking/text deltas"]
     create --> stop{stop_reason<br/>== tool_use?}
     stop -- no --> final([print final text])
     stop -- yes --> exec["run each tool_use block"]
@@ -109,7 +110,9 @@ benchmark:
 - [x] **Context compaction** — summarize older history when the live context
       crosses a token budget, so long runs don't overflow the window
       (see [`docs/context-compaction.md`](docs/context-compaction.md)).
-- [ ] **Streaming output** — token-level visibility during long turns.
+- [x] **Streaming output** — token-level visibility during long turns; the loop
+      streams via `messages.stream()` and renders thinking/text deltas live
+      (see [`docs/streaming.md`](docs/streaming.md)).
 - [ ] **Sub-agents** — a `task` tool that spawns a nested loop for parallel work.
 - [ ] **Trajectory logging** — record every step for debugging and analysis.
 - [ ] **Permission/gating layer** — for interactive (non-benchmark) use.

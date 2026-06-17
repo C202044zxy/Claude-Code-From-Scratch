@@ -60,6 +60,45 @@ class FakeResponse:
         self.usage = usage
 
 
+class FakeStreamEvent:
+    """Mimics an SDK enriched stream event (.type + .text / .thinking)."""
+
+    def __init__(
+        self, type: str, text: str | None = None, thinking: str | None = None
+    ) -> None:
+        self.type = type
+        self.text = text
+        self.thinking = thinking
+
+
+class FakeStream:
+    """Context manager mimicking `client.messages.stream(...)`.
+
+    Iterating it yields one event per text/thinking block in the final
+    response; `get_final_message()` hands back that same FakeResponse, so the
+    loop's downstream handling (usage, stop_reason, append) is unchanged.
+    """
+
+    def __init__(self, response: FakeResponse) -> None:
+        self._response = response
+
+    def __enter__(self) -> "FakeStream":
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        return None
+
+    def __iter__(self):
+        for block in self._response.content:
+            if block.type == "text":
+                yield FakeStreamEvent("text", text=block.text)
+            elif block.type == "thinking":
+                yield FakeStreamEvent("thinking", thinking=block.text)
+
+    def get_final_message(self) -> FakeResponse:
+        return self._response
+
+
 class FakeMessages:
     def __init__(self, outer: "FakeClient") -> None:
         self._outer = outer
@@ -70,6 +109,12 @@ class FakeMessages:
         if not kwargs.get("tools"):
             return self._outer.summary_response
         return self._outer.loop_responses.pop(0)
+
+    def stream(self, **kwargs: Any) -> FakeStream:
+        # Loop turns flow through stream(); record the call like create() does
+        # so call-tracking assertions still see them.
+        self._outer.calls.append(kwargs)
+        return FakeStream(self._outer.loop_responses.pop(0))
 
 
 class FakeClient:
@@ -293,3 +338,32 @@ def test_run_compacts_once_and_tallies_summary_tokens() -> None:
     summary_calls = [c for c in agent.client.calls if not c.get("tools")]
     assert len(summary_calls) == 1
     assert summary_calls[0]["system"] == agent.compaction_prompt
+
+
+# --- streaming -------------------------------------------------------------
+
+
+def test_run_streams_thinking_and_text_deltas() -> None:
+    captured: list[str] = []
+    agent = make_agent(stream_to=captured.append)
+
+    response = FakeResponse(
+        content=[
+            FakeBlock("thinking", text="let me think"),
+            FakeBlock("text", text="here is the answer"),
+        ],
+        stop_reason="end_turn",
+        usage=FakeUsage(input_tokens=5),
+    )
+    summary = FakeResponse([FakeBlock("text", text="")], "end_turn", FakeUsage())
+    agent.client = FakeClient([response], summary)
+
+    result = agent.run("do the thing")
+
+    assert result == "here is the answer"
+    out = "".join(captured)
+    # Both deltas streamed live, thinking wrapped in the dim ANSI codes.
+    assert "let me think" in out
+    assert "here is the answer" in out
+    assert "\033[2m" in out  # dim on (thinking)
+    assert "\033[0m" in out  # dim off (thinking → text transition)
