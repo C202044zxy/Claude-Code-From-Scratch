@@ -21,10 +21,11 @@ import json
 import os
 from typing import Any, Callable
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 import anthropic
 
-from .prompts import SYSTEM_PROMPT, COMPACTION_PROMPT
+from .prompts import SYSTEM_PROMPT, COMPACTION_PROMPT, SUBAGENT_PROMPT
 from .tools import Tool, ToolError, default_tools
 
 # A sink for human-readable progress. The CLI passes `print`; tests can capture.
@@ -78,6 +79,8 @@ class Agent:
         compact_threshold: float | None = None,
         keep_recent: int | None = None,
         stream_to: Emit = _stdout_write,
+        depth: int = 0, 
+        max_depth: int | None = None,
     ) -> None:
         provider = (provider or os.getenv("CC_PROVIDER", "anthropic")).lower()
         if provider not in PROVIDERS:
@@ -94,7 +97,15 @@ class Agent:
             base_url=cfg["base_url"],
             api_key=os.getenv(cfg["api_key_env"]),
         )
-        self.tools = tools if tools is not None else default_tools()
+        
+        self.depth = depth
+        self.max_depth = max_depth if max_depth is not None else int(
+            os.getenv("CC_MAX_DEPTH", 1)
+        )
+        self._children: list["Agent"] = []
+        spawn = self._spawn_child if self.depth < self.max_depth else None
+
+        self.tools = tools if tools is not None else default_tools(spawn)
         self.tools_by_name = {t.name: t for t in self.tools}
         self.system = system
         self.model = model or os.getenv("CC_MODEL") or cfg["default_model"]
@@ -167,20 +178,9 @@ class Agent:
                 return self._final_text(response.content)
 
             # Execute every requested tool and return all results in one user turn.
-            tool_results = []
-            for block in response.content:
-                if block.type != "tool_use":
-                    continue
-                result, is_error = self._execute(block.name, block.input)
-                tool_results.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": result,
-                        "is_error": is_error,
-                    }
-                )
+            tool_results = self._execute_tools(response.content)
             self.messages.append({"role": "user", "content": tool_results})
+            self._absorb_children()
 
         return "[stopped: hit max turns without finishing]"
 
@@ -313,6 +313,62 @@ class Agent:
     def _final_text(content: list[Any]) -> str:
         parts = [b.text for b in content if b.type == "text"]
         return "\n".join(parts).strip()
+    
+    # ----- Subagent -----
+    def _spawn_child(self) -> "Agent":
+        child = Agent(
+            system=SUBAGENT_PROMPT,
+            model=self.model,
+            max_tokens=self.max_tokens,
+            effort=self.effort,
+            provider=self.provider,
+            emit=lambda _t: None,
+            stream_to=lambda _t: None,
+            max_turns=self.max_turns,
+            compaction_prompt=self.compaction_prompt,
+            context_window=self.context_window,
+            compact_threshold=self.compact_threshold,
+            keep_recent=self.keep_recent,
+            depth=self.depth + 1,
+            max_depth=self.max_depth,
+        )
+        self._children.append(child)
+        return child
+    
+    def _absorb_children(self) -> None:
+        """Fold child agents' usage and turns into our running totals.
+
+        Children accumulate their own usage independently (they have their own
+        context window and API calls). This rolls those totals up so the parent's
+        usage reflects all spend — important for cost accounting (swebench.py).
+        Does NOT affect compaction: children don't share the parent's context
+        window, so their token consumption is irrelevant to the parent's
+        compaction threshold.
+        """
+        while self._children:
+            child = self._children.pop()
+            for key in self.usage:
+                self.usage[key] += child.usage[key]
+            self.turns += child.turns
+
+    def _execute_tools(self, content) -> list:
+        blocks = [b for b in content if b.type == "tool_use"]
+        if len(blocks) == 1:
+            results =  [self._execute(blocks[0].name, blocks[0].input)]
+        else:
+            with ThreadPoolExecutor(max_workers=min(len(blocks), 8)) as ex:
+                results = list(ex.map(lambda b: self._execute(b.name, b.input), blocks))
+        
+        tool_results = [
+            {
+                "type": "tool_result",
+                "tool_use_id": b.id,
+                "content": result, 
+                "is_error": is_error,
+            }
+            for b, (result, is_error) in zip(blocks, results)
+        ]
+        return tool_results
 
 
 def _context_tokens(response: Any) -> int:

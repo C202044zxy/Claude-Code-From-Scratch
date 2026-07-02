@@ -14,10 +14,11 @@ from .glob import GlobTool
 from .grep import GrepTool
 from .read import ReadTool
 from .write import WriteTool
+from .task import TaskTool
 
 
-def default_tools() -> list[Tool]:
-    return [
+def default_tools(spawn=None) -> list[Tool]:
+    tool_list = [
         BashTool(),
         ReadTool(),
         WriteTool(),
@@ -25,6 +26,8 @@ def default_tools() -> list[Tool]:
         GlobTool(),
         GrepTool(),
     ]
-
+    if spawn is not None:
+        tool_list.append(TaskTool(spawn))
+    return tool_list
 
 __all__ = ["Tool", "ToolError", "default_tools"]
